@@ -5,14 +5,19 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
-    vec,
 };
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use anyhow::{Result, Context};
-use clap::{Args};
-use rocketmq::{SimpleConsumer, conf::{ClientOption, SimpleConsumerOption}, model::{common::{FilterExpression, FilterType}}};
+use anyhow::{Context, Result};
+use clap::Args;
+use rocketmq::{
+    conf::{ClientOption, SimpleConsumerOption},
+    model::common::{FilterExpression, FilterType},
+    SimpleConsumer,
+};
 use tracing::info;
 use tokio::{signal, task::JoinHandle, time::sleep};
+
+use crate::types::HostPort;
+use crate::timezone;
 
 struct ShutdownSignal {
     requested: Arc<AtomicBool>,
@@ -47,8 +52,7 @@ impl Drop for ShutdownSignal {
 
 
 #[derive(Args, Debug, Clone)]
-pub struct SimpleConsumerArgs
-{
+pub(crate) struct SimpleConsumerArgs {
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
@@ -58,9 +62,6 @@ pub struct SimpleConsumerArgs
     #[arg(long, default_value = "test")]
     pub consumer_group: String,
 
-    // TODO 支持多topic
-    // #[arg(long, value_delimiter = ',')]
-    // pub topics: Vec<String>,
     #[arg(long)]
     pub topic: String,
 
@@ -80,15 +81,42 @@ pub struct SimpleConsumerArgs
     pub long_polling_timeout: Duration,
 }
 
-impl SimpleConsumerArgs {
-    pub(super) async fn run(self) -> Result<()>
-    {
+pub(super) struct SimpleConsumerCommand {
+    access: HostPort,
+    consumer_group: String,
+    topic: String,
+    tag: String,
+    print_body: bool,
+    namespace: String,
+    timeout: Duration,
+    long_polling_timeout: Duration,
+}
+
+impl TryFrom<SimpleConsumerArgs> for SimpleConsumerCommand {
+    type Error = anyhow::Error;
+
+    fn try_from(args: SimpleConsumerArgs) -> Result<Self> {
+        Ok(Self {
+            access: HostPort::new(args.host, args.port),
+            consumer_group: args.consumer_group,
+            topic: args.topic,
+            tag: args.tag,
+            print_body: args.print_body,
+            namespace: args.namespace,
+            timeout: args.timeout,
+            long_polling_timeout: args.long_polling_timeout,
+        })
+    }
+}
+
+impl SimpleConsumerCommand {
+    pub(super) async fn run(self) -> Result<()> {
         let mut consumer_option = SimpleConsumerOption::default();
         consumer_option.set_consumer_group(self.consumer_group);
         consumer_option.set_topics(vec![self.topic.clone()]);
 
         let mut client_option = ClientOption::default();
-        client_option.set_access_url(format!("{}:{}", self.host, self.port));
+        client_option.set_access_url(self.access.to_string());
         client_option.set_namespace(self.namespace);
         client_option.set_long_polling_timeout(self.long_polling_timeout);
         client_option.set_timeout(self.timeout);
@@ -145,10 +173,10 @@ impl SimpleConsumerArgs {
                     message.tag(),
                     message.keys(),
                     message.message_group(),
-                    timestamp_format(message.delivery_timestamp()),
+                    message.delivery_timestamp().map(timezone::format_unix_timestamp).unwrap_or_else(|| "None".to_string()),
                     message.delivery_attempt(),
                     message.born_host(),
-                    message.born_timestamp()
+                    timezone::format_unix_timestamp(message.born_timestamp()),
                 });
                 if print_body {
                     info!("    body: {}", String::from_utf8_lossy(message.body()));
@@ -166,15 +194,5 @@ impl SimpleConsumerArgs {
         consumer.shutdown().await.context("Failed to shutdown simple consumer")?;
 
         Ok(())
-    }
-}
-
-fn timestamp_format(ts: Option<i64>) -> String {
-    match ts {
-        Some(ts) => match OffsetDateTime::from_unix_timestamp(ts) {
-            Ok(dt) => dt.format(&Rfc3339).unwrap_or_else(|e| format!("format_error: {e}")),
-            Err(e) => format!("invalid timestamp {ts}: {e}"),
-        },
-        None => "null".to_string(),
     }
 }

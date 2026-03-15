@@ -1,9 +1,12 @@
 mod simple_consumer;
+mod producer;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use simple_consumer::SimpleConsumerArgs;
+use simple_consumer::{SimpleConsumerArgs, SimpleConsumerCommand};
+
+use crate::cli::producer::{ProducerArgs, ProducerCommand};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -13,19 +16,16 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub async  fn run(self) -> Result<()> 
-    {
-        match self.command{
-            Command::SimpleConsumer(args) => args.run().await,
+    pub async fn run(self) -> Result<()> {
+        match self.command {
+            Command::SimpleConsumer(args) => SimpleConsumerCommand::try_from(args)?.run().await,
+            Command::Producer(args) => ProducerCommand::try_from(args)?.run().await,
         }
     }
 }
 
-
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// 启动实时服务
     SimpleConsumer(SimpleConsumerArgs),
+    Producer(ProducerArgs),
 }
-
-
